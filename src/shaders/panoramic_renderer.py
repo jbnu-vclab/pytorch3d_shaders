@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import numpy as np
+
 from pytorch3d.renderer.mesh.shader import ShaderBase, HardPhongShader, SoftPhongShader, phong_shading, hard_rgb_blend
 from pytorch3d.renderer.cameras import FoVOrthographicCameras, FoVPerspectiveCameras
 from pytorch3d.renderer import MeshRenderer, MeshRasterizer
@@ -70,10 +72,12 @@ class PanoramicRendering(nn.Module):
                  lights,
                  raster_settings,
                  base_shader,
+                 blend_params,
+                 image_ref,
                  device):
         super(PanoramicRendering, self).__init__()
-        self.pos = nn.Parameter(init_pos)
-        self.rot = nn.Parameter(init_rot)
+        self.pos = nn.Parameter(init_pos.to(device))
+        self.rot = nn.Parameter(init_rot.to(device))
 
         self.cube_width = raster_settings.image_size
         self.pano_img_width = pano_img_width
@@ -83,28 +87,43 @@ class PanoramicRendering(nn.Module):
         self.device = device
         self.lights = lights
         self.raster_settings = raster_settings
+        self.blend_params = blend_params
+
         self.meshes = mesh.extend(6) # TODO: mesh should be properly "batched" to match cubemap (6 dir)
 
         rad_90 = torch.tensor([90.* torch.pi / 180.])
         y_axis = torch.tensor([0,1,0])
         x_axis = torch.tensor([1,0,0])
+
+        # (Important Note!!) camera T & R is applied to transform the scene to view space.
+        # It does not describe pose of the camera
         self.rotation_matrices = torch.stack((self.rotation_matrix(y_axis, 0 * rad_90),  # forward
-                                              self.rotation_matrix(y_axis, rad_90),    # left
+                                              self.rotation_matrix(y_axis, -rad_90),    # left
                                               self.rotation_matrix(y_axis, 2 * rad_90), # back
-                                              self.rotation_matrix(y_axis, -rad_90),   # right
-                                              self.rotation_matrix(x_axis, -rad_90),    # up
-                                              self.rotation_matrix(x_axis, rad_90),   # down
-                                              ), dim=0)
+                                              self.rotation_matrix(y_axis, rad_90),   # right
+                                              self.rotation_matrix(x_axis, rad_90),    # up
+                                              self.rotation_matrix(x_axis, -rad_90),   # down
+                                              ), dim=0).to(device)
 
         self.cubemap_to_pano_mapping_flat = self.get_projection_mapping_table()
         self.cubemap_to_pano_mapping_flat.to(device)
+
+        if image_ref is not None:
+            buf_img = torch.from_numpy((image_ref[...,:3].max(-1) != 1).astype(np.float32))
+            self.register_buffer('image_ref', buf_img)
+
+        pass
 
     def set_shader(self, cameras):
         self.base_shader.device = self.device
         self.base_shader.cameras = cameras
         self.base_shader.lights = self.lights
+        if self.blend_params:
+            self.base_shader.blend_params = self.blend_params
 
     def set_renderer(self, cameras):
+        self.set_shader(cameras)
+
         renderer = MeshRenderer(
             rasterizer=MeshRasterizer(
                 cameras=cameras,
@@ -127,9 +146,12 @@ class PanoramicRendering(nn.Module):
         b, c, d = -axis * torch.sin(theta / 2.0)
         aa, bb, cc, dd = a * a, b * b, c * c, d * d
         bc, ad, ac, ab, bd, cd = b * c, a * d, a * c, a * b, b * d, c * d
-        return torch.tensor([[aa + bb - cc - dd, 2 * (bc + ad), 2 * (bd - ac)],
+
+        col_major_rot = torch.tensor([[aa + bb - cc - dd, 2 * (bc + ad), 2 * (bd - ac)],
                              [2 * (bc - ad), aa + cc - bb - dd, 2 * (cd + ab)],
                              [2 * (bd + ac), 2 * (cd - ab), aa + dd - bb - cc]])
+
+        return torch.transpose(col_major_rot,1,0)
 
     def debug_draw(self, tensor, is_gray = False):
         import matplotlib.pyplot as plt
@@ -147,7 +169,7 @@ class PanoramicRendering(nn.Module):
     def get_projection_mapping_table(self):
         DEG_TO_RAD = torch.pi / 180.
 
-        x = torch.arange(-180.,180., 360./self.pano_img_width)
+        x = torch.arange(-180.,180., 360./self.pano_img_width).flip(dims=[0])
         y = torch.arange(-90., 90., 180. / self.pano_img_height)
         grid_x, grid_y = torch.meshgrid(x,y)
 
@@ -158,7 +180,7 @@ class PanoramicRendering(nn.Module):
 
         # modified some calculation becuase we want z-axis is looking dir
         pixel_vector = torch.stack((torch.cos(grid_y) * torch.sin(grid_x),
-                                    torch.sin(grid_y),
+                                    -torch.sin(grid_y),
                                     torch.cos(grid_y) * torch.cos(grid_x),
                                     ),
                                    dim=0)
@@ -179,7 +201,7 @@ class PanoramicRendering(nn.Module):
         back_x_off = (((-projected_vec[0, :, :] + 1) / 2) * self.cube_width).type(torch.LongTensor)
         back_y_off = (((projected_vec[1, :, :] + 1) / 2) * self.cube_width).type(torch.LongTensor)
         up_x_off = (((projected_vec[0, :, :] + 1) / 2) * self.cube_width).type(torch.LongTensor)
-        up_y_off = (((projected_vec[2, :, :] + 1) / 2) * self.cube_width).type(torch.LongTensor)
+        up_y_off = (((-projected_vec[2, :, :] + 1) / 2) * self.cube_width).type(torch.LongTensor)
         down_x_off = (((projected_vec[0, :, :] + 1) / 2) * self.cube_width).type(torch.LongTensor)
         down_y_off = (((projected_vec[2, :, :] + 1) / 2) * self.cube_width).type(torch.LongTensor)
 
@@ -226,30 +248,43 @@ class PanoramicRendering(nn.Module):
         return cubemap_to_pano_mapping_flat
 
     # TODO: validate for batch operation
-    def forward(self):
-        poss = self.pos.repeat(6,1)
+    def render_panorama(self):
+        # (Important Note!!) camera T & R is applied to transform the scene to view space.
+        # It does not describe pose of the camera
+
+        poss = self.pos.repeat(6, 1)
         rots = torch.matmul(self.rot.unsqueeze(0), self.rotation_matrices)
 
         cameras = FoVPerspectiveCameras(device=self.device, R=rots, T=poss, znear=0.001, zfar=10,
                                         fov=90.0, aspect_ratio=1.0)
 
         renderer = self.set_renderer(cameras)
-        cubemap_imgs = renderer(self.meshes, cameras=cameras, lights=self.lights)  # (bxWxHx4)
+        cubemap_imgs = renderer(self.meshes.clone(), cameras=cameras, lights=self.lights)  # (bxWxHx4) # Mesh does not propagate grad
 
         # cubemap concat to debugging
-        cubemap_imgs_cat = torch.cat((cubemap_imgs[0,:,:,:],cubemap_imgs[1,:,:,:],
-                                     cubemap_imgs[2,:,:,:],cubemap_imgs[3,:,:,:],
-                                     cubemap_imgs[4,:,:,:],cubemap_imgs[5,:,:,:]),
+        cubemap_imgs_cat = torch.cat((cubemap_imgs[0, :, :, :], cubemap_imgs[1, :, :, :],
+                                      cubemap_imgs[2, :, :, :], cubemap_imgs[3, :, :, :],
+                                      cubemap_imgs[4, :, :, :], cubemap_imgs[5, :, :, :]),
                                      dim=1)
 
-        cubemap_imgs_flatten = cubemap_imgs.view([6*self.cube_width*self.cube_width, 4])
+        cubemap_imgs_flatten = cubemap_imgs.view([6 * self.cube_width * self.cube_width, 4])
 
-        equirect_img = cubemap_imgs_flatten[self.cubemap_to_pano_mapping_flat,:]
+        equirect_img = cubemap_imgs_flatten[self.cubemap_to_pano_mapping_flat, :]
 
-        equirect_img = equirect_img.view([self.pano_img_width, self.pano_img_height, 4]).permute(1,0,2)
+        equirect_img = equirect_img.view([self.pano_img_width, self.pano_img_height, 4]).permute(1, 0, 2).flip([0, 1])
 
         equirect_img = equirect_img.unsqueeze(0)
         cubemap_imgs_cat = cubemap_imgs_cat.unsqueeze(0)
 
         return equirect_img, cubemap_imgs_cat
+
+    def forward(self):
+        equirect_img, _ = self.render_panorama()
+
+        if self.training:
+            loss = torch.sum((equirect_img[...,3] - self.image_ref) ** 2)
+            return equirect_img, loss
+        else:
+            return equirect_img, 0
+
 

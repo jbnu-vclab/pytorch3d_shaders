@@ -18,6 +18,7 @@ from pytorch3d.renderer import (
     RasterizationSettings,
     MeshRenderer,
     MeshRasterizer,
+    BlendParams
 )
 
 from shaders.get_shader import get_shader_from_name
@@ -196,18 +197,25 @@ def test_pano_module(model_paths: list,
     [mesh.offset_verts_(torch.tensor(tr, device=device)) for mesh, tr in zip(mesh_list, model_translations)]
     mesh = join_meshes_as_scene(mesh_list)
 
+    blend_params = None
+
     lights, _ = set_lights_and_camera(device, is_cubemap=False)
     raster_settings = set_raster_setting()
     base_shader = get_shader_from_name(shader_name, device)
 
-    init_pos = torch.Tensor([0,0,0])
-    init_rot = torch.Tensor([[1,0,0], [0,1,0], [0,0,1]])
 
-    model = PanoramicRendering(init_pos,init_rot,1024,512,mesh, lights, raster_settings, base_shader, device)
+    init_pos = torch.Tensor([0,0,0])
+    # init_rot = torch.Tensor([[1,0,0], [0,1,0], [0,0,1]])
+    init_rot = pytorch3d.transforms.random_rotation()
+
+    model = PanoramicRendering(init_pos,init_rot,1024,512,mesh, lights, raster_settings, base_shader, blend_params, device)
 
     model.eval()
     rendered_img, cubemap_imgs_cat = model()
     rendered_img, cubemap_imgs_cat = rendered_img.detach(), cubemap_imgs_cat.detach()
+
+    for i in range(6):
+        cubemap_imgs_cat[:,:,i*raster_settings.image_size-1,:] = 0
 
     plt.figure(figsize=(10, 5))
 
@@ -234,13 +242,16 @@ if __name__ == '__main__':
     DATA_DIR = "../data"
     FILENAME = ["dolphin.obj",
                 "dolphin.obj",
-                "LCD_Monitor.obj",
+                "dolphin.obj",
                 "LCD_Monitor.obj",
                 "dolphin.obj",
                 "dolphin.obj"]
     model_paths = [os.path.join(DATA_DIR, x) for x in FILENAME]
 
     model_translations = [[0.,1.,3.], [-1.,0.,-3.], [-3., 0.5, 0.], [3., 0.2, 0.], [1., 3., 0.], [2., -7., 0.]]
+
+    # test_shader(model_paths, load_textures=False, model_translations=model_translations, normalize=True,
+    #             shader_name="SoftSilhouette", device=device)
 
     # test_shader(model_paths, load_textures=False, model_translations=model_translations, normalize=True,
     #             shader_name="SoftPhong", device=device)

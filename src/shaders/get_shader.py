@@ -6,6 +6,8 @@ def get_shader_from_name(shader_name: str,
                          device):
     if shader_name.lower() == 'softphong':
         shader = SoftPhongShader(device)
+    if shader_name.lower() == 'hardphong':
+        shader = HardPhongShader(device)
 
     if shader_name.lower() == 'hardedge':
         shader = HardEdgeShader(device)
@@ -14,5 +16,8 @@ def get_shader_from_name(shader_name: str,
 
     if shader_name.lower() == 'hardpanoramic':
         shader = NaivePanoramicShader(device)
+
+    if shader_name.lower() == 'softsilhouette':
+        shader = SoftSilhouetteShader(device)
 
     return shader
