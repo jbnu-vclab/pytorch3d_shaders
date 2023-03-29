@@ -1,6 +1,6 @@
 from pytorch3d.renderer.mesh.shader import *
 from .edge_shader import SoftEdgeShader, HardEdgeShader
-from .panoramic_shader import HardPanoramicShader
+from .panoramic_renderer import NaivePanoramicShader
 
 def get_shader_from_name(shader_name: str,
                          device):
@@ -13,6 +13,6 @@ def get_shader_from_name(shader_name: str,
         shader = SoftEdgeShader(device)
 
     if shader_name.lower() == 'hardpanoramic':
-        shader = HardPanoramicShader(device)
+        shader = NaivePanoramicShader(device)
 
     return shader
