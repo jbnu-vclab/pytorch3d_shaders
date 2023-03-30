@@ -89,7 +89,7 @@ class PanoramicRendering(nn.Module):
         self.raster_settings = raster_settings
         self.blend_params = blend_params
 
-        self.meshes = mesh.extend(6) # TODO: mesh should be properly "batched" to match cubemap (6 dir)
+        self.meshes = mesh.extend(6).clone() # TODO: mesh should be properly "batched" to match cubemap (6 dir)
 
         rad_90 = torch.tensor([90.* torch.pi / 180.])
         y_axis = torch.tensor([0,1,0])
@@ -257,9 +257,8 @@ class PanoramicRendering(nn.Module):
 
         cameras = FoVPerspectiveCameras(device=self.device, R=rots, T=poss, znear=0.001, zfar=10,
                                         fov=90.0, aspect_ratio=1.0)
-
         renderer = self.set_renderer(cameras)
-        cubemap_imgs = renderer(self.meshes.clone(), cameras=cameras, lights=self.lights)  # (bxWxHx4) # Mesh does not propagate grad
+        cubemap_imgs = renderer(self.meshes, cameras=cameras, lights=self.lights)  # (bxWxHx4) # Mesh does not propagate grad
 
         # cubemap concat to debugging
         cubemap_imgs_cat = torch.cat((cubemap_imgs[0, :, :, :], cubemap_imgs[1, :, :, :],
@@ -285,6 +284,6 @@ class PanoramicRendering(nn.Module):
             loss = torch.sum((equirect_img[...,3] - self.image_ref) ** 2)
             return equirect_img, loss
         else:
-            return equirect_img, 0
+            return equirect_img, torch.tensor([0])
 
 

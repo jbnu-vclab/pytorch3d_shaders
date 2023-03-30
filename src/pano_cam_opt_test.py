@@ -154,8 +154,8 @@ def pano_cam_opt(model_paths: list,
 
     # 3) Init model and optimizer---
 
-    filename_output = "./pano_optimization_demo.gif"
-    writer = imageio.get_writer(filename_output, mode='I')
+    # filename_output = "./pano_optimization_demo.gif"
+    # writer = imageio.get_writer(filename_output, mode='I')
 
     init_pos = torch.Tensor([0, 0, 0])
     init_rot = pytorch3d.transforms.random_rotation()
@@ -169,24 +169,29 @@ def pano_cam_opt(model_paths: list,
 
     plt.figure(figsize=(10, 10))
 
-    # image_init, _ = model()
-    # plt.subplot(1, 2, 1)
-    # plt.imshow(image_init.detach().squeeze().cpu().numpy()[..., 3])
-    # plt.grid(False)
-    # plt.title("Starting position")
-    #
-    # plt.subplot(1, 2, 2)
-    # plt.imshow(model.image_ref.cpu().numpy().squeeze())
-    # plt.grid(False)
-    # plt.title("Reference silhouette")
-    # plt.show()
+    image_init, _ = model()
+    plt.subplot(1, 2, 1)
+    plt.imshow(image_init.detach().squeeze().cpu().numpy()[..., 3])
+    plt.grid(False)
+    plt.title("Starting position")
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(model.image_ref.cpu().numpy().squeeze())
+    plt.grid(False)
+    plt.title("Reference silhouette")
+    plt.show()
 
     # 4) Run optimizer
 
     loop = tqdm(range(200))
     for i in loop:
+        # model.training()
         optimizer.zero_grad()
         _, loss = model()
+
+        # img = img.detach().cpu().numpy().squeeze()
+        # plt.imshow(img[...,3])
+
         loss.backward()
         optimizer.step()
 
@@ -195,25 +200,19 @@ def pano_cam_opt(model_paths: list,
         if loss.item() < 200:
             break
 
-        print(model.rot.detach().cpu())
+        # Save outputs to create a GIF.
+        if i % 10 == 0:
+            image, _ = model()
+            image = image[0, ..., 3].detach().squeeze().cpu().numpy()
+            pos = model.pos.detach()
 
-        # # Save outputs to create a GIF.
-        # if i % 10 == 0:
-        #     model.eval()
-        #     image, _ = model()
-        #     image = image[0, ..., :3].detach().squeeze().cpu().numpy()
-        #
-        #     plt.imshow(image)
-        #
-        #     image = img_as_ubyte(image)
-        #     writer.append_data(image)
-        #
-        #     plt.figure()
-        #     plt.imshow(image[..., :3])
-        #     plt.title("iter: %d, loss: %0.2f" % (i, loss.data))
-        #     plt.axis("off")
+            plt.figure()
+            plt.imshow(image)
+            plt.title("iter: %d, loss: %0.2f, pos: %.2f, %.2f, %.2f, " % (i, loss.data, pos[0], pos[1], pos[2]))
+            plt.axis("off")
+            plt.savefig(f"{i}.png")
 
-    writer.close()
+    # writer.close()
 
 
 
